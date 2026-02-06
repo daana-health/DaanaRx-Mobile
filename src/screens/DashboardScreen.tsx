@@ -141,7 +141,7 @@ export default function DashboardScreen() {
   const stats: DashboardStats | null = data?.getDashboardStats || null;
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.content}
@@ -247,11 +247,11 @@ export default function DashboardScreen() {
                   onPress={() => navigation.navigate('Inventory' as never)}
                 />
                 <QuickActionCard
-                  title="Reports & Analytics"
-                  description="View detailed reports"
-                  icon="document-text-outline"
+                  title="Activity Logs"
+                  description="View transaction history"
+                  icon="clipboard-outline"
                   color="indigo"
-                  onPress={() => navigation.navigate('Reports' as never)}
+                  onPress={() => navigation.navigate('Logs' as never)}
                 />
               </View>
             </View>

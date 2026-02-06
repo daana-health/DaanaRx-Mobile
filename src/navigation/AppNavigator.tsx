@@ -16,6 +16,7 @@ import CheckInScreen from '../screens/checkin/CheckInScreen';
 import CheckOutScreen from '../screens/checkout/CheckOutScreen';
 import ScanScreen from '../screens/scan/ScanScreen';
 import EnhancedInventoryScreen from '../screens/inventory/EnhancedInventoryScreen';
+import LogsScreen from '../screens/logs/LogsScreen';
 import ReportsScreen from '../screens/reports/ReportsScreen';
 import AdminScreen from '../screens/admin/AdminScreen';
 import SettingsScreen from '../screens/settings/SettingsScreen';
@@ -29,6 +30,7 @@ export type RootStackParamList = {
   Scan: undefined;
   Admin: undefined;
   Settings: undefined;
+  Logs: undefined;
 };
 
 export type MainTabParamList = {
@@ -118,6 +120,15 @@ export default function AppNavigator() {
           options={{
             headerShown: true as const,
             title: 'Settings',
+            presentation: 'modal',
+          }}
+        />
+        <Stack.Screen
+          name="Logs"
+          component={LogsScreen}
+          options={{
+            headerShown: true as const,
+            title: 'Activity Logs',
             presentation: 'modal',
           }}
         />

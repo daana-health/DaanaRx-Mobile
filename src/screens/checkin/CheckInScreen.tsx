@@ -10,20 +10,19 @@ import {
   ActivityIndicator,
   Platform,
   Alert as RNAlert,
+  FlatList,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { gql } from '@apollo/client';
 import { useQuery, useMutation, useLazyQuery } from '@apollo/client/react';
 import { useSelector } from 'react-redux';
 import type { RootState } from '../../store';
-import { CameraView, useCameraPermissions } from 'expo-camera';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import QRCode from 'react-native-qrcode-svg';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import Badge from '../../components/ui/Badge';
-import { Alert } from '../../components/ui/Alert';
-import type { LocationData, LotData, DrugData } from '../../types';
+import type { LocationData, LotData, DrugData, BatchCreatedUnit } from '../../types';
 
 const GET_LOCATIONS = gql`
   query GetLocations {
@@ -40,6 +39,7 @@ const GET_LOTS = gql`
     getLots {
       lotId
       source
+      lotCode
       locationId
       dateCreated
       maxCapacity
@@ -49,20 +49,30 @@ const GET_LOTS = gql`
   }
 `;
 
+const GET_CLINIC = gql`
+  query GetClinic {
+    getClinic {
+      clinicId
+      requireLotLocation
+    }
+  }
+`;
+
 const CREATE_LOT = gql`
   mutation CreateLot($input: CreateLotInput!) {
     createLot(input: $input) {
       lotId
       source
+      lotCode
       note
       maxCapacity
     }
   }
 `;
 
-const SEARCH_DRUGS = gql`
-  query SearchDrugs($query: String!) {
-    searchDrugs(query: $query) {
+const SEARCH_MEDICATIONS_BY_NAME = gql`
+  query SearchMedicationsByName($query: String!) {
+    searchMedicationsByName(query: $query) {
       drugId
       medicationName
       genericName
@@ -75,899 +85,505 @@ const SEARCH_DRUGS = gql`
   }
 `;
 
-const CREATE_UNIT = gql`
-  mutation CreateUnit($input: CreateUnitInput!) {
-    createUnit(input: $input) {
+const BATCH_CREATE_UNITS = gql`
+  mutation BatchCreateUnits($input: BatchCheckInInput!) {
+    batchCreateUnits(input: $input) {
       unitId
+      qrCode
       totalQuantity
       availableQuantity
       expiryDate
       drug {
         medicationName
-        genericName
+        strength
+        strengthUnit
+        form
       }
     }
   }
 `;
 
+// Helper to get lot description from code
+function getLotDescription(lotCode: string): string {
+  if (!lotCode || lotCode.length === 0) return '';
+
+  const firstChar = lotCode[0].toUpperCase();
+  const drawerLetter = `Drawer ${firstChar}`;
+
+  if (lotCode.length === 1) {
+    return drawerLetter;
+  }
+
+  const secondChar = lotCode[1].toUpperCase();
+  if (secondChar === 'L') {
+    return `${drawerLetter} Left`;
+  } else if (secondChar === 'R') {
+    return `${drawerLetter} Right`;
+  }
+
+  return drawerLetter;
+}
+
 export default function CheckInScreen() {
   const user = useSelector((state: RootState) => state.auth.user);
-  const [activeStep, setActiveStep] = useState(0);
 
-  // Step 1: Lot
-  const [lotSource, setLotSource] = useState('');
-  const [lotNote, setLotNote] = useState('');
-  const [lotMaxCapacity, setLotMaxCapacity] = useState('');
-  const [selectedLocationId, setSelectedLocationId] = useState('');
+  // Form state
   const [selectedLotId, setSelectedLotId] = useState('');
   const [selectedLot, setSelectedLot] = useState<LotData | null>(null);
-  const [useExistingLot, setUseExistingLot] = useState(false);
-  const [showLocationPicker, setShowLocationPicker] = useState(false);
-  const [showLotPicker, setShowLotPicker] = useState(false);
-
-  // Step 2: Drug
-  const [searchInput, setSearchInput] = useState('');
-  const [searchResults, setSearchResults] = useState<any[]>([]);
-  const [selectedDrug, setSelectedDrug] = useState<DrugData | null>(null);
-  const [showManualEntry, setShowManualEntry] = useState(false);
-  const [manualDrug, setManualDrug] = useState({
-    medicationName: '',
-    genericName: '',
-    strength: 0,
-    strengthUnit: 'mg',
-    ndcId: '',
-    form: 'Tablet',
-  });
-  const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
-  const [scanned, setScanned] = useState(false);
-
-  // Step 3: Unit
-  const [totalQuantity, setTotalQuantity] = useState('');
-  const [expiryDate, setExpiryDate] = useState(new Date());
+  const [medicationName, setMedicationName] = useState('');
+  const [quantity, setQuantity] = useState('1');
+  const [dosage, setDosage] = useState('');
+  const [expiryDate, setExpiryDate] = useState<Date | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [manufacturerLotNumber, setManufacturerLotNumber] = useState('');
-  const [unitNotes, setUnitNotes] = useState('');
-  const [createdUnitId, setCreatedUnitId] = useState('');
-  const [createdUnit, setCreatedUnit] = useState<any>(null);
 
-  // Camera permissions
-  const [permission, requestPermission] = useCameraPermissions();
+  // Medication search state
+  const [searchResults, setSearchResults] = useState<DrugData[]>([]);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [selectedMedication, setSelectedMedication] = useState<DrugData | null>(null);
+
+  // New lot modal state
+  const [showNewLotModal, setShowNewLotModal] = useState(false);
+  const [newLotDrawer, setNewLotDrawer] = useState('A');
+  const [newLotSide, setNewLotSide] = useState<'L' | 'R' | ''>('');
+  const [newLotSource, setNewLotSource] = useState('');
+  const [newLotNote, setNewLotNote] = useState('');
+  const [newLotLocationId, setNewLotLocationId] = useState('');
+
+  // Picker modals
+  const [showLotPicker, setShowLotPicker] = useState(false);
+  const [showDrawerPicker, setShowDrawerPicker] = useState(false);
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
+
+  // Success state
+  const [createdUnits, setCreatedUnits] = useState<BatchCreatedUnit[]>([]);
+  const [showSuccess, setShowSuccess] = useState(false);
 
   // Queries
   const { data: locationsData } = useQuery(GET_LOCATIONS);
   const { data: lotsData, refetch: refetchLots } = useQuery(GET_LOTS);
-  const [searchDrugs, { loading: searchLoading }] = useLazyQuery(SEARCH_DRUGS, {
+  const { data: clinicData } = useQuery(GET_CLINIC);
+  const [searchMedications, { loading: searchLoading }] = useLazyQuery(SEARCH_MEDICATIONS_BY_NAME, {
     onCompleted: (data) => {
-      setSearchResults(data.searchDrugs || []);
+      setSearchResults(data.searchMedicationsByName || []);
+      setShowDropdown((data.searchMedicationsByName || []).length > 0);
     },
   });
+
+  const hasLocations = locationsData?.getLocations && locationsData.getLocations.length > 0;
+  const isAdmin = user?.userRole === 'admin' || user?.userRole === 'superadmin';
+  const requireLotLocation = clinicData?.getClinic?.requireLotLocation ?? false;
 
   // Mutations
   const [createLot, { loading: creatingLot }] = useMutation(CREATE_LOT, {
     onCompleted: (data) => {
       setSelectedLotId(data.createLot.lotId);
       setSelectedLot(data.createLot);
+      setShowNewLotModal(false);
+      setNewLotDrawer('A');
+      setNewLotSide('');
+      setNewLotSource('');
+      setNewLotNote('');
+      setNewLotLocationId('');
       refetchLots();
-      RNAlert.alert('Success', 'Lot created successfully');
-      setActiveStep(1);
+      RNAlert.alert('Success', `Lot ${data.createLot.lotCode} created successfully`);
     },
     onError: (error) => {
       RNAlert.alert('Error', error.message);
     },
   });
 
-  const [createUnit, { loading: creatingUnit }] = useMutation(CREATE_UNIT, {
-    refetchQueries: ['GetDashboardStats', 'GetUnits', 'GetUnitsAdvanced'],
+  const [batchCreateUnits, { loading: creatingUnits }] = useMutation(BATCH_CREATE_UNITS, {
+    refetchQueries: ['GetDashboardStats', 'GetUnits', 'GetUnitsAdvanced', 'GetLots'],
     awaitRefetchQueries: true,
     onCompleted: (data) => {
-      setCreatedUnitId(data.createUnit.unitId);
-      setCreatedUnit(data.createUnit);
-      RNAlert.alert('Success', 'Unit created successfully! Inventory updated.');
-      setActiveStep(3);
+      setCreatedUnits(data.batchCreateUnits);
+      setShowSuccess(true);
+      RNAlert.alert('Success', `${data.batchCreateUnits.length} unit(s) created successfully!`);
     },
     onError: (error) => {
       RNAlert.alert('Error', error.message);
     },
   });
 
-  // Search effect
+  // Debounced medication search
   useEffect(() => {
     const timeoutId = setTimeout(() => {
-      if (searchInput.trim().length >= 2) {
-        searchDrugs({ variables: { query: searchInput } });
+      if (medicationName.trim().length >= 2 && !selectedMedication) {
+        searchMedications({ variables: { query: medicationName } });
       } else {
         setSearchResults([]);
+        setShowDropdown(false);
       }
-    }, 500);
+    }, 400);
 
     return () => clearTimeout(timeoutId);
-  }, [searchInput]);
+  }, [medicationName, selectedMedication]);
 
-  const handleBarcodeScanned = ({ data }: { data: string }) => {
-    if (!scanned) {
-      setScanned(true);
-      setShowBarcodeScanner(false);
-      setSearchInput(data);
-      setTimeout(() => setScanned(false), 2000);
+  const handleSelectMedication = (med: DrugData) => {
+    setSelectedMedication(med);
+    setMedicationName(med.medicationName);
+    // Auto-fill dosage if strength info is available
+    if (med.strength && med.strengthUnit) {
+      setDosage(`${med.strength}${med.strengthUnit}`);
     }
-  };
-
-  const handleOpenScanner = async () => {
-    if (!permission?.granted) {
-      const result = await requestPermission();
-      if (!result.granted) {
-        RNAlert.alert(
-          'Camera Permission',
-          'Camera permission is required to scan barcodes'
-        );
-        return;
-      }
-    }
-    setShowBarcodeScanner(true);
-  };
-
-  const handleSelectDrug = (drug: any) => {
-    const mappedDrug: DrugData = {
-      drugId: drug.drugId,
-      medicationName: drug.medicationName,
-      genericName: drug.genericName,
-      strength: drug.strength,
-      strengthUnit: drug.strengthUnit,
-      ndcId: drug.ndcId,
-      form: drug.form,
-      inInventory: drug.inInventory || false,
-    };
-
-    setSelectedDrug(mappedDrug);
-    setSearchInput(drug.medicationName);
     setSearchResults([]);
-    setShowManualEntry(false);
+    setShowDropdown(false);
+  };
+
+  const handleClearMedication = () => {
+    setSelectedMedication(null);
+    setMedicationName('');
+    setDosage('');
   };
 
   const handleCreateLot = () => {
-    if (useExistingLot) {
-      if (!selectedLotId) {
-        RNAlert.alert('Error', 'Please select a lot');
-        return;
-      }
-      setActiveStep(1);
+    if (!newLotDrawer) {
+      RNAlert.alert('Error', 'Please select a drawer letter');
       return;
     }
 
-    const maxCap = lotMaxCapacity ? parseInt(lotMaxCapacity, 10) : undefined;
+    if (requireLotLocation && !newLotSide) {
+      RNAlert.alert('Error', 'Please select a side (L/R)');
+      return;
+    }
+
+    if (!newLotLocationId) {
+      RNAlert.alert('Error', 'Please select a storage location');
+      return;
+    }
+
+    const lotCode = newLotSide ? `${newLotDrawer}${newLotSide}` : newLotDrawer;
+
     createLot({
       variables: {
         input: {
-          source: lotSource,
-          note: lotNote,
-          locationId: selectedLocationId,
-          maxCapacity: maxCap,
+          lotCode,
+          source: newLotSource || undefined,
+          note: newLotNote || undefined,
+          locationId: newLotLocationId,
         },
       },
     });
   };
 
-  const handleCreateUnit = () => {
-    if (!selectedLotId || !expiryDate) {
-      RNAlert.alert('Error', 'Please fill all required fields');
+  const handleSubmit = () => {
+    // Validation
+    if (!selectedLotId) {
+      RNAlert.alert('Error', 'Please select a lot');
       return;
     }
 
-    const drugData = selectedDrug || manualDrug;
-    const qty = parseInt(totalQuantity, 10);
-
-    // Validate quantity
-    if (isNaN(qty) || qty <= 0) {
-      RNAlert.alert('Error', 'Total quantity must be a valid positive number');
+    if (!medicationName.trim()) {
+      RNAlert.alert('Error', 'Please enter a medication name');
       return;
     }
 
-    // Format expiry date as YYYY-MM-DD
-    const formattedExpiryDate = expiryDate.toISOString().split('T')[0];
+    if (!dosage.trim()) {
+      RNAlert.alert('Error', 'Please enter the dosage');
+      return;
+    }
 
-    const cleanDrugData = !selectedDrug?.drugId
-      ? {
-          medicationName: drugData.medicationName,
-          genericName: drugData.genericName,
-          strength: drugData.strength,
-          strengthUnit: drugData.strengthUnit,
-          ndcId: drugData.ndcId,
-          form: drugData.form,
-        }
-      : undefined;
+    const qty = parseInt(quantity, 10);
+    if (isNaN(qty) || qty < 1) {
+      RNAlert.alert('Error', 'Quantity must be at least 1');
+      return;
+    }
 
-    createUnit({
+    batchCreateUnits({
       variables: {
         input: {
-          totalQuantity: qty,
-          availableQuantity: qty,
           lotId: selectedLotId,
-          expiryDate: formattedExpiryDate,
-          drugId: selectedDrug?.drugId,
-          drugData: cleanDrugData,
+          medicationName: medicationName.trim(),
+          dosage: dosage.trim(),
+          quantity: qty,
+          expiryDate: expiryDate ? expiryDate.toISOString().split('T')[0] : undefined,
           manufacturerLotNumber: manufacturerLotNumber || undefined,
-          optionalNotes: unitNotes,
         },
       },
     });
   };
 
   const handleReset = () => {
-    setActiveStep(0);
-    setLotSource('');
-    setLotNote('');
-    setLotMaxCapacity('');
-    setSelectedLocationId('');
     setSelectedLotId('');
     setSelectedLot(null);
-    setCreatedUnitId('');
-    setCreatedUnit(null);
-    setUseExistingLot(false);
-    setSearchInput('');
-    setSelectedDrug(null);
-    setShowManualEntry(false);
-    setManualDrug({
-      medicationName: '',
-      genericName: '',
-      strength: 0,
-      strengthUnit: 'mg',
-      ndcId: '',
-      form: 'Tablet',
-    });
-    setTotalQuantity('');
-    setExpiryDate(new Date());
+    setMedicationName('');
+    setSelectedMedication(null);
+    setQuantity('1');
+    setDosage('');
+    setExpiryDate(null);
     setManufacturerLotNumber('');
-    setUnitNotes('');
-    setCreatedUnitId('');
+    setCreatedUnits([]);
+    setShowSuccess(false);
   };
 
-  const isAdmin = user?.userRole === 'admin' || user?.userRole === 'superadmin';
-  const hasLocations =
-    locationsData?.getLocations && locationsData.getLocations.length > 0;
-
-  const isStep1Valid = () => {
-    if (useExistingLot) {
-      return selectedLotId !== '';
-    }
-    return lotSource.trim() !== '' && selectedLocationId !== '';
-  };
-
-  const isStep2Valid = () => {
-    if (selectedDrug) return true;
+  const isFormValid = () => {
     return (
-      manualDrug.medicationName.trim() !== '' &&
-      manualDrug.genericName.trim() !== '' &&
-      manualDrug.strength > 0 &&
-      manualDrug.ndcId.trim() !== ''
+      selectedLotId &&
+      medicationName.trim() &&
+      dosage.trim() &&
+      parseInt(quantity, 10) >= 1
     );
   };
 
-  const isStep3Valid = () => {
-    const qty = parseInt(totalQuantity, 10);
+  // Success view - show created units with QR codes
+  if (showSuccess && createdUnits.length > 0) {
     return (
-      !isNaN(qty) &&
-      qty > 0 &&
-      expiryDate instanceof Date &&
-      manufacturerLotNumber.trim() !== ''
-    );
-  };
-
-  const renderStep1 = () => (
-    <Card style={styles.card}>
-      <Text style={styles.stepTitle}>Step 1: Create or Select Lot</Text>
-      <Text style={styles.stepSubtitle}>Choose donation source</Text>
-
-      <View style={styles.buttonRow}>
-        <TouchableOpacity
-          style={[styles.toggleButton, !useExistingLot && styles.toggleButtonActive]}
-          onPress={() => setUseExistingLot(false)}
-        >
-          <Text
-            style={[
-              styles.toggleButtonText,
-              !useExistingLot && styles.toggleButtonTextActive,
-            ]}
-          >
-            Create New
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.toggleButton, useExistingLot && styles.toggleButtonActive]}
-          onPress={() => setUseExistingLot(true)}
-        >
-          <Text
-            style={[
-              styles.toggleButtonText,
-              useExistingLot && styles.toggleButtonTextActive,
-            ]}
-          >
-            Use Existing
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {useExistingLot ? (
-        <View style={styles.section}>
-          <Text style={styles.label}>Select Lot *</Text>
-          <TouchableOpacity
-            style={styles.picker}
-            onPress={() => setShowLotPicker(true)}
-          >
-            <Text style={styles.pickerText}>
-              {selectedLotId
-                ? lotsData?.getLots.find((l: LotData) => l.lotId === selectedLotId)
-                    ?.source || 'Select lot'
-                : 'Select lot'}
+      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+        <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
+          <View style={styles.header}>
+            <Text style={styles.successTitle}>Check-In Complete</Text>
+            <Text style={styles.successSubtitle}>
+              {createdUnits.length} unit(s) created successfully
             </Text>
-          </TouchableOpacity>
-        </View>
-      ) : (
-        <>
-          <View style={styles.section}>
-            <Text style={styles.label}>Donation Source *</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g., CVS Pharmacy"
-              value={lotSource}
-              onChangeText={setLotSource}
-            />
           </View>
 
-          <View style={styles.section}>
-            <Text style={styles.label}>Storage Location *</Text>
-            <TouchableOpacity
-              style={styles.picker}
-              onPress={() => setShowLocationPicker(true)}
-            >
-              <Text style={styles.pickerText}>
-                {selectedLocationId
-                  ? locationsData?.getLocations.find(
-                      (l: LocationData) => l.locationId === selectedLocationId
-                    )?.name || 'Select location'
-                  : 'Select location'}
-              </Text>
-            </TouchableOpacity>
-          </View>
+          <Card style={styles.card}>
+            <Text style={styles.sectionTitle}>Generated Labels ({createdUnits.length})</Text>
+            <Text style={styles.sectionSubtitle}>
+              Each unit has a unique QR code for tracking
+            </Text>
 
-          <View style={styles.section}>
-            <Text style={styles.label}>Maximum Capacity (Optional)</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g., 100"
-              keyboardType="numeric"
-              value={lotMaxCapacity}
-              onChangeText={setLotMaxCapacity}
-            />
-          </View>
-
-          <View style={styles.section}>
-            <Text style={styles.label}>Notes (Optional)</Text>
-            <TextInput
-              style={[styles.input, styles.textArea]}
-              placeholder="Any additional information"
-              multiline
-              numberOfLines={3}
-              value={lotNote}
-              onChangeText={setLotNote}
-            />
-          </View>
-        </>
-      )}
-
-      <View style={styles.buttonContainer}>
-        {!useExistingLot && (
-          <Button
-            onPress={handleCreateLot}
-            disabled={creatingLot || !isStep1Valid()}
-            style={{ marginBottom: 12 }}
-          >
-            {creatingLot ? 'Creating...' : 'Create Lot & Continue'}
-          </Button>
-        )}
-        {useExistingLot && (
-          <Button onPress={() => setActiveStep(1)} disabled={!isStep1Valid()}>
-            Continue
-          </Button>
-        )}
-      </View>
-    </Card>
-  );
-
-  const renderStep2 = () => (
-    <Card style={styles.card}>
-      <Text style={styles.stepTitle}>Step 2: Find Drug</Text>
-      <Text style={styles.stepSubtitle}>Search or scan NDC barcode</Text>
-
-      <Button variant="outline" onPress={handleOpenScanner} style={{ marginBottom: 16 }}>
-        Scan Barcode
-      </Button>
-
-      <View style={styles.section}>
-        <Text style={styles.label}>Search by Drug Name or NDC</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Start typing..."
-          value={searchInput}
-          onChangeText={setSearchInput}
-        />
-        {searchLoading && (
-          <ActivityIndicator size="small" color="#2563eb" style={{ marginTop: 8 }} />
-        )}
-      </View>
-
-      {searchResults.length > 0 && !selectedDrug && (
-        <View style={styles.searchResults}>
-          <ScrollView style={{ maxHeight: 200 }}>
-            {searchResults.map((drug, index) => (
-              <TouchableOpacity
-                key={index}
-                style={styles.searchResultItem}
-                onPress={() => handleSelectDrug(drug)}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.drugName}>{drug.medicationName}</Text>
-                  <Text style={styles.drugDetails}>
-                    {drug.strength}<Text> </Text>{drug.strengthUnit}<Text> - </Text>{drug.form}
+            {createdUnits.map((unit, index) => (
+              <View key={unit.unitId} style={styles.unitCard}>
+                <View style={styles.qrContainer}>
+                  <QRCode
+                    value={unit.qrCode}
+                    size={100}
+                    color="#000000"
+                    backgroundColor="#ffffff"
+                  />
+                </View>
+                <View style={styles.unitInfo}>
+                  <Text style={styles.qrCodeText}>{unit.qrCode}</Text>
+                  <Text style={styles.unitMedName}>{unit.drug.medicationName}</Text>
+                  <Text style={styles.unitMedDetails}>
+                    {unit.drug.strength}{unit.drug.strengthUnit} - {unit.drug.form}
                   </Text>
-                  {drug.ndcId && (
-                    <Text style={styles.drugNdc}><Text>NDC: </Text>{drug.ndcId}</Text>
-                  )}
                 </View>
-                {drug.inInventory && (
-                  <Badge variant="secondary" style={{ marginLeft: 8 }}>
-                    In Stock
-                  </Badge>
-                )}
-              </TouchableOpacity>
+              </View>
             ))}
-          </ScrollView>
-        </View>
-      )}
+          </Card>
 
-      {selectedDrug && (
-        <Card style={styles.selectedDrug}>
-          <Text style={styles.selectedDrugName}>{selectedDrug.medicationName}</Text>
-          <Text style={styles.selectedDrugDetails}>
-            {selectedDrug.strength}<Text> </Text>{selectedDrug.strengthUnit}<Text> - </Text>{selectedDrug.form}
-          </Text>
-          {selectedDrug.ndcId && (
-            <Text style={styles.selectedDrugNdc}><Text>NDC: </Text>{selectedDrug.ndcId}</Text>
-          )}
-          <Button
-            variant="outline"
-            onPress={() => setSelectedDrug(null)}
-            style={{ marginTop: 12 }}
-          >
-            Change Drug
+          <Button onPress={handleReset} style={styles.resetButton}>
+            Check In More Medications
           </Button>
-        </Card>
-      )}
-
-      {!selectedDrug && (
-        <>
-          <Button
-            variant="outline"
-            onPress={() => setShowManualEntry(!showManualEntry)}
-            style={{ marginTop: 16 }}
-          >
-            {showManualEntry ? 'Hide Manual Entry' : 'Enter Drug Manually'}
-          </Button>
-
-          {showManualEntry && (
-            <View style={styles.manualEntry}>
-              <Text style={styles.manualEntryTitle}>Manual Drug Entry</Text>
-
-              <View style={styles.section}>
-                <Text style={styles.label}>Medication Name *</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="e.g., Fluoxetine"
-                  value={manualDrug.medicationName}
-                  onChangeText={(text) =>
-                    setManualDrug({ ...manualDrug, medicationName: text })
-                  }
-                />
-              </View>
-
-              <View style={styles.section}>
-                <Text style={styles.label}>Generic Name *</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="e.g., Prozac"
-                  value={manualDrug.genericName}
-                  onChangeText={(text) =>
-                    setManualDrug({ ...manualDrug, genericName: text })
-                  }
-                />
-              </View>
-
-              <View style={styles.row}>
-                <View style={{ flex: 1, marginRight: 8 }}>
-                  <Text style={styles.label}>Strength *</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="10"
-                    keyboardType="numeric"
-                    value={manualDrug.strength ? String(manualDrug.strength) : ''}
-                    onChangeText={(text) =>
-                      setManualDrug({ ...manualDrug, strength: Number(text) || 0 })
-                    }
-                  />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.label}>Unit *</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="mg"
-                    value={manualDrug.strengthUnit}
-                    onChangeText={(text) =>
-                      setManualDrug({ ...manualDrug, strengthUnit: text })
-                    }
-                  />
-                </View>
-              </View>
-
-              <View style={styles.section}>
-                <Text style={styles.label}>NDC ID *</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Enter NDC code"
-                  value={manualDrug.ndcId}
-                  onChangeText={(text) => setManualDrug({ ...manualDrug, ndcId: text })}
-                />
-              </View>
-
-              <View style={styles.section}>
-                <Text style={styles.label}>Form *</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Tablet"
-                  value={manualDrug.form}
-                  onChangeText={(text) => setManualDrug({ ...manualDrug, form: text })}
-                />
-              </View>
-            </View>
-          )}
-        </>
-      )}
-
-      <View style={styles.buttonContainer}>
-        <View style={styles.buttonRow}>
-          <Button
-            variant="outline"
-            onPress={() => setActiveStep(0)}
-            style={{ flex: 1, marginRight: 8 }}
-          >
-            Previous
-          </Button>
-          <Button
-            onPress={() => setActiveStep(2)}
-            disabled={!isStep2Valid()}
-            style={{ flex: 1 }}
-          >
-            Next
-          </Button>
-        </View>
-      </View>
-    </Card>
-  );
-
-  const renderStep3 = () => {
-    const qty = parseInt(totalQuantity, 10) || 0;
-    const currentCapacity = selectedLot?.currentCapacity ?? 0;
-    const lotCapacityPercent = selectedLot?.maxCapacity
-      ? ((currentCapacity + qty) / selectedLot.maxCapacity) * 100
-      : 0;
-    const willExceedCapacity =
-      selectedLot?.maxCapacity && currentCapacity + qty > selectedLot.maxCapacity;
-    const willBeNearFull = lotCapacityPercent >= 80 && !willExceedCapacity;
-
-    return (
-      <Card style={styles.card}>
-        <Text style={styles.stepTitle}>Step 3: Create Unit</Text>
-        <Text style={styles.stepSubtitle}>Set quantity and expiry</Text>
-
-        {selectedLot?.maxCapacity && (
-          <View style={styles.capacityInfo}>
-            <Text style={styles.capacityLabel}>
-              Lot Capacity: {currentCapacity + qty}/{selectedLot.maxCapacity} units
-            </Text>
-            {willExceedCapacity && (
-              <Alert
-                variant="destructive"
-                title="Capacity Exceeded"
-                message={`This quantity will exceed the lot's maximum capacity. Reduce quantity to ${
-                  selectedLot.maxCapacity - currentCapacity
-                } or less.`}
-              />
-            )}
-            {willBeNearFull && (
-              <Alert
-                variant="warning"
-                title="Lot Near Capacity"
-                message={`Adding this unit will bring the lot to ${Math.round(
-                  lotCapacityPercent
-                )}% capacity.`}
-              />
-            )}
-          </View>
-        )}
-
-      <View style={styles.section}>
-        <Text style={styles.label}>Total Quantity *</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="100"
-          keyboardType="numeric"
-          value={totalQuantity}
-          onChangeText={setTotalQuantity}
-        />
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.label}>Expiry Date *</Text>
-        <TouchableOpacity
-          style={styles.datePickerButton}
-          onPress={() => setShowDatePicker(true)}
-        >
-          <Text style={styles.datePickerText}>
-            {expiryDate.toLocaleDateString()}
-          </Text>
-        </TouchableOpacity>
-        {showDatePicker && (
-          <DateTimePicker
-            value={expiryDate}
-            mode="date"
-            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-            onChange={(event, selectedDate) => {
-              setShowDatePicker(Platform.OS === 'ios');
-              if (selectedDate) {
-                setExpiryDate(selectedDate);
-              }
-            }}
-            minimumDate={new Date()}
-          />
-        )}
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.label}>Manufacturer Lot Number *</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Enter lot number from package"
-          value={manufacturerLotNumber}
-          onChangeText={setManufacturerLotNumber}
-        />
-        <Text style={styles.hint}>
-          Required for recall tracking. Find on medication package.
-        </Text>
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.label}>Notes (Optional)</Text>
-        <TextInput
-          style={[styles.input, styles.textArea]}
-          placeholder="Any additional notes"
-          multiline
-          numberOfLines={3}
-          value={unitNotes}
-          onChangeText={setUnitNotes}
-        />
-      </View>
-
-      <View style={styles.buttonContainer}>
-        <View style={styles.buttonRow}>
-          <Button
-            variant="outline"
-            onPress={() => setActiveStep(1)}
-            style={{ flex: 1, marginRight: 8 }}
-          >
-            Previous
-          </Button>
-          <Button
-            onPress={handleCreateUnit}
-            disabled={!isStep3Valid() || creatingUnit}
-            style={{ flex: 1 }}
-          >
-            {creatingUnit ? 'Creating...' : 'Create Unit'}
-          </Button>
-        </View>
-      </View>
-    </Card>
+        </ScrollView>
+      </SafeAreaView>
     );
-  };
-
-  const renderStep4 = () => (
-    <ScrollView contentContainerStyle={{ padding: 16 }}>
-      <Card style={styles.card}>
-        <Text style={styles.confirmationTitle}>✓ Unit Created Successfully!</Text>
-        <Text style={styles.confirmationText}>
-          Unit has been added to inventory.
-        </Text>
-
-        {createdUnit && (
-          <View style={styles.unitSummary}>
-            <Text style={styles.summaryTitle}>Medication Details</Text>
-            <Text style={styles.summaryText}>
-              {createdUnit.drug.medicationName} ({createdUnit.drug.genericName})
-            </Text>
-            <Text style={styles.summaryLabel}>Quantity: {createdUnit.totalQuantity} units</Text>
-            <Text style={styles.summaryLabel}>
-              Expiry: {new Date(createdUnit.expiryDate).toLocaleDateString()}
-            </Text>
-          </View>
-        )}
-
-        {createdUnitId && (
-          <View style={styles.qrContainer}>
-            <Text style={styles.qrTitle}>Unit QR Code</Text>
-            <View style={styles.qrCodeWrapper}>
-              <QRCode
-                value={createdUnitId}
-                size={200}
-                color="#000000"
-                backgroundColor="#ffffff"
-              />
-            </View>
-            <Text style={styles.qrHint}>
-              Scan this code to quickly access this unit
-            </Text>
-            <Text style={styles.unitIdLabel}>Unit ID:</Text>
-            <Text style={styles.unitIdValue}>{createdUnitId}</Text>
-          </View>
-        )}
-
-        <View style={styles.buttonContainer}>
-          <Button onPress={handleReset}>Add Another Unit</Button>
-        </View>
-      </Card>
-    </ScrollView>
-  );
+  }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Check In</Text>
-        <Text style={styles.subtitle}>Add new medications to inventory</Text>
-      </View>
+        <View style={styles.header}>
+          <Text style={styles.title}>Check In</Text>
+          <Text style={styles.subtitle}>Add new medications to inventory</Text>
+        </View>
 
-      {!hasLocations && (
-        <Card style={styles.alert}>
-          <Text style={styles.alertText}>
-            {isAdmin
-              ? 'You need to create at least one storage location before checking in medications.'
-              : 'No storage locations are available. Please contact your administrator.'}
-          </Text>
-        </Card>
-      )}
+        {!hasLocations && (
+          <Card style={styles.alertCard}>
+            <Text style={styles.alertText}>
+              {isAdmin
+                ? 'You need to create at least one storage location before checking in medications.'
+                : 'No storage locations are available. Please contact your administrator.'}
+            </Text>
+          </Card>
+        )}
 
-      {hasLocations && (
-        <>
-          <View style={styles.stepper}>
-            <View style={styles.stepperItem}>
-              <View
-                style={[
-                  styles.stepperCircle,
-                  activeStep >= 0 && styles.stepperCircleActive,
-                ]}
+        {hasLocations && (
+          <Card style={styles.card}>
+            <Text style={styles.cardTitle}>New Check-In</Text>
+
+            {/* Lot Selection */}
+            <View style={styles.section}>
+              <Text style={styles.label}>Lot # *</Text>
+              <TouchableOpacity
+                style={styles.picker}
+                onPress={() => setShowLotPicker(true)}
               >
-                <Text
-                  style={[
-                    styles.stepperNumber,
-                    activeStep >= 0 && styles.stepperNumberActive,
-                  ]}
-                >
-                  1
+                <Text style={styles.pickerText}>
+                  {selectedLot ? (
+                    selectedLot.lotCode
+                      ? `${selectedLot.lotCode} - ${getLotDescription(selectedLot.lotCode)}`
+                      : selectedLot.source || 'Unnamed Lot'
+                  ) : (
+                    'Select lot'
+                  )}
                 </Text>
-              </View>
-              <Text style={styles.stepperLabel}>Lot</Text>
-            </View>
-            <View style={styles.stepperLine} />
-            <View style={styles.stepperItem}>
-              <View
-                style={[
-                  styles.stepperCircle,
-                  activeStep >= 1 && styles.stepperCircleActive,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.stepperNumber,
-                    activeStep >= 1 && styles.stepperNumberActive,
-                  ]}
-                >
-                  2
+              </TouchableOpacity>
+              {selectedLot?.maxCapacity && selectedLot.currentCapacity !== undefined && (
+                <Text style={styles.hint}>
+                  Capacity: {selectedLot.currentCapacity}/{selectedLot.maxCapacity}
                 </Text>
-              </View>
-              <Text style={styles.stepperLabel}>Drug</Text>
+              )}
             </View>
-            <View style={styles.stepperLine} />
-            <View style={styles.stepperItem}>
-              <View
-                style={[
-                  styles.stepperCircle,
-                  activeStep >= 2 && styles.stepperCircleActive,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.stepperNumber,
-                    activeStep >= 2 && styles.stepperNumberActive,
-                  ]}
-                >
-                  3
-                </Text>
-              </View>
-              <Text style={styles.stepperLabel}>Unit</Text>
-            </View>
-          </View>
 
-          {activeStep === 0 && renderStep1()}
-          {activeStep === 1 && renderStep2()}
-          {activeStep === 2 && renderStep3()}
-          {activeStep === 3 && renderStep4()}
-        </>
-      )}
+            {/* Medication Name */}
+            <View style={styles.section}>
+              <Text style={styles.label}>Medication Name *</Text>
+              {selectedMedication ? (
+                <View style={styles.selectedMedicationCard}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.selectedMedicationName}>
+                      {selectedMedication.medicationName}
+                    </Text>
+                    <Text style={styles.selectedMedicationDetails}>
+                      {selectedMedication.strength}{selectedMedication.strengthUnit} - {selectedMedication.form}
+                    </Text>
+                    {selectedMedication.inInventory && (
+                      <Badge variant="secondary" style={{ marginTop: 4 }}>
+                        In Stock
+                      </Badge>
+                    )}
+                  </View>
+                  <Button variant="outline" onPress={handleClearMedication}>
+                    Change
+                  </Button>
+                </View>
+              ) : (
+                <>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Type to search medications..."
+                    value={medicationName}
+                    onChangeText={(text) => {
+                      setMedicationName(text);
+                      setShowDropdown(true);
+                    }}
+                  />
+                  {searchLoading && (
+                    <ActivityIndicator size="small" color="#2563eb" style={{ marginTop: 8 }} />
+                  )}
+                  {showDropdown && searchResults.length > 0 && (
+                    <View style={styles.searchResults}>
+                      <ScrollView style={{ maxHeight: 200 }}>
+                        {searchResults.map((med, index) => (
+                          <TouchableOpacity
+                            key={index}
+                            style={styles.searchResultItem}
+                            onPress={() => handleSelectMedication(med)}
+                          >
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.drugName}>{med.medicationName}</Text>
+                              <Text style={styles.drugDetails}>
+                                {med.strength}{med.strengthUnit} - {med.form}
+                              </Text>
+                            </View>
+                            {med.inInventory && (
+                              <Badge variant="secondary">In Stock</Badge>
+                            )}
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  )}
+                </>
+              )}
+              <Text style={styles.hint}>Search existing medications or type a new name</Text>
+            </View>
 
-      {/* Location Picker Modal */}
-      <Modal
-        visible={showLocationPicker}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowLocationPicker(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Select Location</Text>
-            <ScrollView style={styles.modalScroll}>
-              {locationsData?.getLocations.map((loc: LocationData) => (
+            {/* Quantity */}
+            <View style={styles.section}>
+              <Text style={styles.label}>Quantity *</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="1"
+                keyboardType="numeric"
+                value={quantity}
+                onChangeText={setQuantity}
+              />
+              <Text style={styles.hint}>Each unit will receive its own unique QR code label</Text>
+            </View>
+
+            {/* Dosage */}
+            <View style={styles.section}>
+              <Text style={styles.label}>Dosage *</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., 500mg, 10mg/5ml"
+                value={dosage}
+                onChangeText={setDosage}
+              />
+            </View>
+
+            {/* Expiration Date - Optional */}
+            <View style={styles.section}>
+              <Text style={styles.label}>Expiration Date (Optional)</Text>
+              <TouchableOpacity
+                style={styles.picker}
+                onPress={() => setShowDatePicker(true)}
+              >
+                <Text style={styles.pickerText}>
+                  {expiryDate ? expiryDate.toLocaleDateString() : 'Select date'}
+                </Text>
+              </TouchableOpacity>
+              {showDatePicker && (
+                <DateTimePicker
+                  value={expiryDate || new Date()}
+                  mode="date"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={(event, selectedDate) => {
+                    setShowDatePicker(Platform.OS === 'ios');
+                    if (selectedDate) {
+                      setExpiryDate(selectedDate);
+                    }
+                  }}
+                  minimumDate={new Date()}
+                />
+              )}
+            </View>
+
+            {/* Manufacturer Lot Number - Optional */}
+            <View style={styles.section}>
+              <Text style={styles.label}>Medication Lot # (Optional)</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="From medication package"
+                value={manufacturerLotNumber}
+                onChangeText={setManufacturerLotNumber}
+              />
+              <Text style={styles.hint}>
+                The manufacturer's lot number from the medication package label
+              </Text>
+            </View>
+
+            {/* Submit */}
+            <Button
+              onPress={handleSubmit}
+              disabled={!isFormValid() || creatingUnits}
+              style={styles.submitButton}
+            >
+              {creatingUnits
+                ? 'Creating...'
+                : `Check In ${parseInt(quantity, 10) > 1 ? `${quantity} Units` : '1 Unit'}`}
+            </Button>
+          </Card>
+        )}
+
+        {/* Lot Picker Modal */}
+        <Modal
+          visible={showLotPicker}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowLotPicker(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Select Lot</Text>
+              <ScrollView style={styles.modalScroll}>
+                {/* Add New Lot Option */}
                 <TouchableOpacity
-                  key={loc.locationId}
-                  style={styles.modalItem}
+                  style={[styles.modalItem, styles.addNewItem]}
                   onPress={() => {
-                    setSelectedLocationId(loc.locationId);
-                    setShowLocationPicker(false);
+                    setShowLotPicker(false);
+                    setShowNewLotModal(true);
                   }}
                 >
-                  <View>
-                    <Text style={styles.modalItemText}>
-                      {loc.name} (<Text>{loc.temp}</Text><Text>)</Text>
-                    </Text>
-                  </View>
+                  <Text style={styles.addNewText}>+ Add New Lot</Text>
                 </TouchableOpacity>
-              ))}
-            </ScrollView>
-            <Button
-              variant="outline"
-              onPress={() => setShowLocationPicker(false)}
-              style={{ marginTop: 16 }}
-            >
-              Cancel
-            </Button>
-          </View>
-        </View>
-      </Modal>
 
-      {/* Lot Picker Modal */}
-      <Modal
-        visible={showLotPicker}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowLotPicker(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Select Lot</Text>
-            <ScrollView style={styles.modalScroll}>
-              {lotsData?.getLots.map((lot: LotData) => {
-                const capacityPercent = lot.maxCapacity && lot.currentCapacity
-                  ? (lot.currentCapacity / lot.maxCapacity) * 100
-                  : 0;
-                const isNearFull = capacityPercent >= 80;
-                const isFull = lot.availableCapacity === 0;
-
-                return (
+                {lotsData?.getLots.map((lot: LotData) => (
                   <TouchableOpacity
                     key={lot.lotId}
                     style={styles.modalItem}
@@ -976,78 +592,221 @@ export default function CheckInScreen() {
                       setSelectedLot(lot);
                       setShowLotPicker(false);
                     }}
-                    disabled={isFull}
                   >
                     <View style={{ flex: 1 }}>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Text style={[styles.modalItemText, isFull && { color: '#9ca3af' }]}>
-                          {lot.source}
-                        </Text>
-                        {isFull && (
-                          <Badge variant="destructive">Full</Badge>
-                        )}
-                        {!isFull && isNearFull && (
-                          <Badge variant="warning">Near Full</Badge>
-                        )}
-                      </View>
+                      <Text style={styles.modalItemText}>
+                        {lot.lotCode
+                          ? `${lot.lotCode} - ${getLotDescription(lot.lotCode)}`
+                          : lot.source || 'Unnamed Lot'}
+                      </Text>
                       <Text style={styles.modalItemSubtext}>
                         {new Date(lot.dateCreated).toLocaleDateString()}
-                        {lot.maxCapacity && (
-                          <Text> • {lot.currentCapacity}/{lot.maxCapacity} units</Text>
-                        )}
+                        {lot.maxCapacity && ` • ${lot.currentCapacity}/${lot.maxCapacity}`}
                       </Text>
                     </View>
                   </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-            <Button
-              variant="outline"
-              onPress={() => setShowLotPicker(false)}
-              style={{ marginTop: 16 }}
-            >
-              Cancel
-            </Button>
+                ))}
+              </ScrollView>
+              <Button variant="outline" onPress={() => setShowLotPicker(false)}>
+                Cancel
+              </Button>
+            </View>
           </View>
-        </View>
-      </Modal>
+        </Modal>
 
-      {/* Barcode Scanner Modal */}
-      <Modal
-        visible={showBarcodeScanner}
-        animationType="slide"
-        onRequestClose={() => setShowBarcodeScanner(false)}
-      >
-        <View style={styles.scannerContainer}>
-          <CameraView
-            style={styles.camera}
-            facing="back"
-            onBarcodeScanned={handleBarcodeScanned}
-            barcodeScannerSettings={{
-              barcodeTypes: ['upc_a', 'upc_e', 'ean13', 'ean8', 'code128', 'code39'],
-            }}
-          >
-            <View style={styles.scannerOverlay}>
-              <View style={styles.scannerHeader}>
-                <Text style={styles.scannerTitle}>Scan NDC Barcode</Text>
-                <Text style={styles.scannerSubtitle}>
-                  Position the barcode within the frame
-                </Text>
-              </View>
-              <View style={styles.scannerFrame} />
-              <View style={styles.scannerActions}>
+        {/* New Lot Modal */}
+        <Modal
+          visible={showNewLotModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowNewLotModal(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Create New Lot</Text>
+              <ScrollView style={styles.modalScroll}>
+                {/* Drawer Letter */}
+                <View style={styles.section}>
+                  <Text style={styles.label}>Drawer Letter *</Text>
+                  <TouchableOpacity
+                    style={styles.picker}
+                    onPress={() => setShowDrawerPicker(true)}
+                  >
+                    <Text style={styles.pickerText}>Drawer {newLotDrawer}</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Side (L/R) */}
+                <View style={styles.section}>
+                  <Text style={styles.label}>
+                    Side {requireLotLocation ? '*' : '(Optional)'}
+                  </Text>
+                  <View style={styles.buttonRow}>
+                    <TouchableOpacity
+                      style={[
+                        styles.toggleButton,
+                        newLotSide === 'L' && styles.toggleButtonActive,
+                      ]}
+                      onPress={() => setNewLotSide(newLotSide === 'L' ? '' : 'L')}
+                    >
+                      <Text
+                        style={[
+                          styles.toggleButtonText,
+                          newLotSide === 'L' && styles.toggleButtonTextActive,
+                        ]}
+                      >
+                        L - Left
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.toggleButton,
+                        newLotSide === 'R' && styles.toggleButtonActive,
+                      ]}
+                      onPress={() => setNewLotSide(newLotSide === 'R' ? '' : 'R')}
+                    >
+                      <Text
+                        style={[
+                          styles.toggleButtonText,
+                          newLotSide === 'R' && styles.toggleButtonTextActive,
+                        ]}
+                      >
+                        R - Right
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.hint}>
+                    Lot code: {newLotSide ? `${newLotDrawer}${newLotSide}` : newLotDrawer}
+                  </Text>
+                </View>
+
+                {/* Storage Location */}
+                <View style={styles.section}>
+                  <Text style={styles.label}>Storage Location *</Text>
+                  <TouchableOpacity
+                    style={styles.picker}
+                    onPress={() => setShowLocationPicker(true)}
+                  >
+                    <Text style={styles.pickerText}>
+                      {newLotLocationId
+                        ? locationsData?.getLocations.find(
+                            (l: LocationData) => l.locationId === newLotLocationId
+                          )?.name || 'Select location'
+                        : 'Select location'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Donation Source - Optional */}
+                <View style={styles.section}>
+                  <Text style={styles.label}>Donation Source (Optional)</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="e.g., CVS Pharmacy"
+                    value={newLotSource}
+                    onChangeText={setNewLotSource}
+                  />
+                </View>
+
+                {/* Note - Optional */}
+                <View style={styles.section}>
+                  <Text style={styles.label}>Note (Optional)</Text>
+                  <TextInput
+                    style={[styles.input, styles.textArea]}
+                    placeholder="Any additional notes"
+                    multiline
+                    numberOfLines={3}
+                    value={newLotNote}
+                    onChangeText={setNewLotNote}
+                  />
+                </View>
+              </ScrollView>
+
+              <View style={styles.buttonRow}>
                 <Button
                   variant="outline"
-                  onPress={() => setShowBarcodeScanner(false)}
-                  style={styles.scannerButton}
+                  onPress={() => setShowNewLotModal(false)}
+                  style={{ flex: 1, marginRight: 8 }}
                 >
                   Cancel
                 </Button>
+                <Button
+                  onPress={handleCreateLot}
+                  disabled={creatingLot}
+                  style={{ flex: 1 }}
+                >
+                  {creatingLot ? 'Creating...' : 'Create Lot'}
+                </Button>
               </View>
             </View>
-          </CameraView>
-        </View>
-      </Modal>
+          </View>
+        </Modal>
+
+        {/* Drawer Picker Modal */}
+        <Modal
+          visible={showDrawerPicker}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowDrawerPicker(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Select Drawer</Text>
+              <ScrollView style={styles.modalScroll}>
+                {Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i)).map(
+                  (letter) => (
+                    <TouchableOpacity
+                      key={letter}
+                      style={styles.modalItem}
+                      onPress={() => {
+                        setNewLotDrawer(letter);
+                        setShowDrawerPicker(false);
+                      }}
+                    >
+                      <Text style={styles.modalItemText}>Drawer {letter}</Text>
+                    </TouchableOpacity>
+                  )
+                )}
+              </ScrollView>
+              <Button variant="outline" onPress={() => setShowDrawerPicker(false)}>
+                Cancel
+              </Button>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Location Picker Modal */}
+        <Modal
+          visible={showLocationPicker}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowLocationPicker(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Select Location</Text>
+              <ScrollView style={styles.modalScroll}>
+                {locationsData?.getLocations.map((loc: LocationData) => (
+                  <TouchableOpacity
+                    key={loc.locationId}
+                    style={styles.modalItem}
+                    onPress={() => {
+                      setNewLotLocationId(loc.locationId);
+                      setShowLocationPicker(false);
+                    }}
+                  >
+                    <Text style={styles.modalItemText}>
+                      {loc.name} ({loc.temp.replace('_', ' ')})
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              <Button variant="outline" onPress={() => setShowLocationPicker(false)}>
+                Cancel
+              </Button>
+            </View>
+          </View>
+        </Modal>
       </ScrollView>
     </SafeAreaView>
   );
@@ -1077,7 +836,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#6b7280',
   },
-  alert: {
+  successTitle: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#10b981',
+    marginBottom: 4,
+  },
+  successSubtitle: {
+    fontSize: 16,
+    color: '#6b7280',
+  },
+  alertCard: {
     backgroundColor: '#fef2f2',
     borderColor: '#fca5a5',
     marginBottom: 16,
@@ -1086,86 +855,28 @@ const styles = StyleSheet.create({
     color: '#991b1b',
     fontSize: 14,
   },
-  stepper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 24,
-  },
-  stepperItem: {
-    alignItems: 'center',
-  },
-  stepperCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#e5e7eb',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 4,
-  },
-  stepperCircleActive: {
-    backgroundColor: '#2563eb',
-  },
-  stepperNumber: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#6b7280',
-  },
-  stepperNumberActive: {
-    color: '#ffffff',
-  },
-  stepperLabel: {
-    fontSize: 12,
-    color: '#6b7280',
-  },
-  stepperLine: {
-    width: 40,
-    height: 2,
-    backgroundColor: '#e5e7eb',
-    marginHorizontal: 8,
-  },
   card: {
     marginBottom: 16,
   },
-  stepTitle: {
+  cardTitle: {
     fontSize: 20,
+    fontWeight: 'bold',
+    color: '#111827',
+    marginBottom: 16,
+  },
+  section: {
+    marginBottom: 16,
+  },
+  sectionTitle: {
+    fontSize: 18,
     fontWeight: 'bold',
     color: '#111827',
     marginBottom: 4,
   },
-  stepSubtitle: {
+  sectionSubtitle: {
     fontSize: 14,
     color: '#6b7280',
     marginBottom: 16,
-  },
-  buttonRow: {
-    flexDirection: 'row',
-  },
-  toggleButton: {
-    flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#d1d5db',
-    backgroundColor: '#ffffff',
-    alignItems: 'center',
-  },
-  toggleButtonActive: {
-    backgroundColor: '#2563eb',
-    borderColor: '#2563eb',
-  },
-  toggleButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#374151',
-  },
-  toggleButtonTextActive: {
-    color: '#ffffff',
-  },
-  section: {
-    marginTop: 16,
   },
   label: {
     fontSize: 14,
@@ -1198,15 +909,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#374151',
   },
-  buttonContainer: {
-    marginTop: 24,
-  },
-  row: {
-    flexDirection: 'row',
-    marginTop: 16,
+  hint: {
+    fontSize: 12,
+    color: '#6b7280',
+    marginTop: 4,
   },
   searchResults: {
-    marginTop: 16,
+    marginTop: 8,
     borderWidth: 1,
     borderColor: '#e5e7eb',
     borderRadius: 8,
@@ -1230,66 +939,91 @@ const styles = StyleSheet.create({
     color: '#6b7280',
     marginTop: 2,
   },
-  drugNdc: {
-    fontSize: 11,
-    color: '#2563eb',
-    marginTop: 2,
-  },
-  selectedDrug: {
-    backgroundColor: '#eff6ff',
+  selectedMedicationCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderWidth: 1,
     borderColor: '#93c5fd',
-    marginTop: 16,
+    borderRadius: 8,
+    backgroundColor: '#eff6ff',
   },
-  selectedDrugName: {
+  selectedMedicationName: {
     fontSize: 16,
     fontWeight: 'bold',
     color: '#111827',
   },
-  selectedDrugDetails: {
+  selectedMedicationDetails: {
     fontSize: 14,
-    color: '#6b7280',
-    marginTop: 4,
-  },
-  selectedDrugNdc: {
-    fontSize: 12,
     color: '#6b7280',
     marginTop: 2,
   },
-  manualEntry: {
+  buttonRow: {
+    flexDirection: 'row',
+  },
+  toggleButton: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  toggleButtonActive: {
+    backgroundColor: '#2563eb',
+    borderColor: '#2563eb',
+  },
+  toggleButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  toggleButtonTextActive: {
+    color: '#ffffff',
+  },
+  submitButton: {
     marginTop: 16,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#e5e7eb',
   },
-  manualEntryTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
+  resetButton: {
+    marginTop: 16,
+  },
+  unitCard: {
+    flexDirection: 'row',
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 8,
+    marginBottom: 12,
+    backgroundColor: '#ffffff',
+  },
+  qrContainer: {
+    padding: 8,
+    backgroundColor: '#ffffff',
+    borderRadius: 4,
+    marginRight: 12,
+  },
+  unitInfo: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  qrCodeText: {
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontSize: 11,
+    color: '#6b7280',
+    marginBottom: 4,
+  },
+  unitMedName: {
+    fontSize: 14,
+    fontWeight: '600',
     color: '#111827',
-    marginBottom: 8,
   },
-  hint: {
+  unitMedDetails: {
     fontSize: 12,
     color: '#6b7280',
-    marginTop: 4,
-  },
-  confirmationTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#10b981',
-    textAlign: 'center',
-    marginBottom: 12,
-  },
-  confirmationText: {
-    fontSize: 16,
-    color: '#374151',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  unitId: {
-    fontSize: 14,
-    color: '#6b7280',
-    textAlign: 'center',
-    marginBottom: 24,
+    marginTop: 2,
   },
   modalOverlay: {
     flex: 1,
@@ -1314,6 +1048,7 @@ const styles = StyleSheet.create({
   },
   modalScroll: {
     maxHeight: 300,
+    marginBottom: 16,
   },
   modalItem: {
     paddingVertical: 12,
@@ -1325,132 +1060,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#374151',
   },
-  scannerContainer: {
-    flex: 1,
-    backgroundColor: '#000000',
-  },
-  camera: {
-    flex: 1,
-  },
-  scannerOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'space-between',
-    padding: 24,
-  },
-  scannerHeader: {
-    alignItems: 'center',
-    paddingTop: 48,
-  },
-  scannerTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#ffffff',
-    marginBottom: 8,
-  },
-  scannerSubtitle: {
-    fontSize: 16,
-    color: '#d1d5db',
-  },
-  scannerFrame: {
-    width: 250,
-    height: 250,
-    alignSelf: 'center',
-    borderWidth: 2,
-    borderColor: '#ffffff',
-    borderRadius: 8,
-  },
-  scannerActions: {
-    paddingBottom: 24,
-  },
-  scannerButton: {
-    backgroundColor: '#ffffff',
-  },
-  datePickerButton: {
-    borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    backgroundColor: '#ffffff',
-  },
-  datePickerText: {
-    fontSize: 14,
-    color: '#111827',
-  },
-  capacityInfo: {
-    marginBottom: 16,
-  },
-  capacityLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#374151',
-    marginBottom: 8,
-  },
   modalItemSubtext: {
     fontSize: 12,
     color: '#6b7280',
     marginTop: 2,
   },
-  unitSummary: {
+  addNewItem: {
     backgroundColor: '#eff6ff',
-    borderRadius: 8,
-    padding: 16,
-    marginVertical: 16,
-  },
-  summaryTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1e40af',
+    borderBottomWidth: 0,
     marginBottom: 8,
+    borderRadius: 8,
   },
-  summaryText: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#111827',
-    marginBottom: 4,
-  },
-  summaryLabel: {
+  addNewText: {
     fontSize: 14,
-    color: '#374151',
-    marginTop: 2,
-  },
-  qrContainer: {
-    alignItems: 'center',
-    padding: 16,
-    backgroundColor: '#f9fafb',
-    borderRadius: 8,
-    marginVertical: 16,
-  },
-  qrTitle: {
-    fontSize: 18,
     fontWeight: '600',
-    color: '#111827',
-    marginBottom: 16,
-  },
-  qrCodeWrapper: {
-    padding: 16,
-    backgroundColor: '#ffffff',
-    borderRadius: 8,
-    marginBottom: 12,
-  },
-  qrHint: {
-    fontSize: 12,
-    color: '#6b7280',
-    textAlign: 'center',
-    marginBottom: 16,
-  },
-  unitIdLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#6b7280',
-    textTransform: 'uppercase',
-    marginBottom: 4,
-  },
-  unitIdValue: {
-    fontSize: 11,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    color: '#374151',
-    textAlign: 'center',
+    color: '#2563eb',
   },
 });

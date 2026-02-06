@@ -25,6 +25,7 @@ import Button from '../../components/ui/Button';
 import Badge from '../../components/ui/Badge';
 import QRCode from 'react-native-qrcode-svg';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { colors, fontSize, fontWeight, spacing, layout, borderRadius } from '../../lib/theme';
 
 const GET_UNITS_ADVANCED = gql`
   query GetUnitsAdvanced($filters: InventoryFilters, $page: Int, $pageSize: Int) {
@@ -178,7 +179,7 @@ function UnitCard({ unit, onPress, onQuickAction }: {
           <View style={styles.detailRow}>
             <Ionicons name="cube-outline" size={16} color="#6b7280" />
             <Text style={styles.detailText}>
-              {unit.availableQuantity} / {unit.totalQuantity} available
+              {Math.floor(unit.availableQuantity)} / {Math.floor(unit.totalQuantity)} available
             </Text>
           </View>
 
@@ -499,7 +500,7 @@ export default function EnhancedInventoryScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       {renderHeader()}
 
       {error ? (
@@ -805,12 +806,12 @@ export default function EnhancedInventoryScreen() {
                 <Card>
                   <View style={styles.detailsRow}>
                     <Text style={styles.detailsLabel}>Total Quantity:</Text>
-                    <Text style={styles.detailsValue}>{selectedUnit.totalQuantity}</Text>
+                    <Text style={styles.detailsValue}>{Math.floor(selectedUnit.totalQuantity)}</Text>
                   </View>
                   <View style={styles.detailsRow}>
                     <Text style={styles.detailsLabel}>Available:</Text>
                     <Text style={styles.detailsValue}>
-                      {selectedUnit.availableQuantity}
+                      {Math.floor(selectedUnit.availableQuantity)}
                     </Text>
                   </View>
                   <View style={styles.detailsRow}>
@@ -904,7 +905,7 @@ export default function EnhancedInventoryScreen() {
                 </Text>
                 <Text style={styles.qrDetails}>
                   {selectedUnit.drug.strength} {selectedUnit.drug.strengthUnit} •{' '}
-                  {selectedUnit.availableQuantity} available
+                  {Math.floor(selectedUnit.availableQuantity)} available
                 </Text>
                 <View style={styles.qrIdContainer}>
                   <Text style={styles.qrIdLabel}>UNIT ID</Text>
@@ -1037,36 +1038,38 @@ export default function EnhancedInventoryScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f9fafb',
+    backgroundColor: colors.muted,
   },
   headerContainer: {
-    backgroundColor: '#2563eb',
-    paddingBottom: 12,
+    backgroundColor: colors.background,
+    paddingBottom: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
   },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingTop: 16,
+    paddingHorizontal: layout.screenPadding,
+    paddingTop: spacing['2xl'],
   },
   headerLeft: {
     flex: 1,
   },
   headerTitle: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#ffffff',
+    fontSize: fontSize['4xl'],
+    fontWeight: fontWeight.bold,
+    color: colors.foreground,
   },
   headerSubtitle: {
-    fontSize: 14,
-    color: '#dbeafe',
+    fontSize: fontSize.base,
+    color: colors.mutedForeground,
   },
   filterButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    width: 44,
+    height: 44,
+    borderRadius: borderRadius.lg,
+    backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1087,15 +1090,17 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   searchContainer: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingHorizontal: layout.screenPadding,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.lg,
+    backgroundColor: colors.background,
   },
   searchInput: {
     marginBottom: 0,
   },
   listContent: {
-    padding: 16,
-    paddingBottom: 32,
+    paddingHorizontal: layout.screenPadding,
+    paddingBottom: spacing['3xl'],
   },
   unitCard: {
     marginBottom: 12,

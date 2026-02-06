@@ -28,6 +28,7 @@ export interface Clinic {
   primaryColor?: string;
   secondaryColor?: string;
   logoUrl?: string;
+  requireLotLocation?: boolean; // Whether L/R is required when creating lots
   createdAt?: Date;
   updatedAt?: Date;
   userRole?: UserRole; // User's role in this clinic (only populated when fetching user's clinics)
@@ -64,7 +65,8 @@ export interface Location {
 
 export interface Lot {
   lotId: string;
-  source: string;
+  source?: string | null;
+  lotCode?: string | null;
   note?: string;
   dateCreated: Date;
   locationId: string;
@@ -78,10 +80,10 @@ export interface Lot {
 export interface Drug {
   drugId: string;
   medicationName: string;
-  genericName: string;
+  genericName?: string | null;
   strength: number;
   strengthUnit: StrengthUnit;
-  ndcId: string;
+  ndcId?: string | null;
   form: DrugForm;
 }
 
@@ -110,8 +112,6 @@ export interface Transaction {
   type: TransactionType;
   quantity: number;
   unitId: string;
-  patientName?: string;
-  patientReferenceId?: string;
   userId: string;
   notes?: string;
   clinicId: string;
@@ -163,18 +163,61 @@ export interface CreateUnitRequest {
 export interface CheckOutRequest {
   unitId: string;
   quantity: number;
-  patientName?: string;
-  patientReferenceId?: string;
   notes?: string;
+}
+
+// Batch check-in types
+export interface BatchCheckInInput {
+  lotId: string;
+  medicationName: string;
+  dosage: string;
+  quantity: number;
+  expiryDate?: string | null;
+  manufacturerLotNumber?: string | null;
+}
+
+export interface BatchCreatedUnit {
+  unitId: string;
+  qrCode: string;
+  totalQuantity: number;
+  availableQuantity: number;
+  expiryDate?: string | null;
+  drug: {
+    medicationName: string;
+    strength: number;
+    strengthUnit: string;
+    form: string;
+  };
+}
+
+// Batch check-out types
+export interface BatchCheckOutItem {
+  unitId: string;
+  quantity: number;
+}
+
+export interface BatchCheckOutResult {
+  transactions: Transaction[];
+  totalItems: number;
+  totalQuantity: number;
+}
+
+// Create lot request with lotCode
+export interface CreateLotInput {
+  lotCode: string;
+  source?: string;
+  note?: string;
+  locationId: string;
+  maxCapacity?: number;
 }
 
 export interface DrugSearchResult {
   drugId?: string;
   medicationName: string;
-  genericName: string;
+  genericName?: string | null;
   strength: number;
   strengthUnit: string;
-  ndcId: string;
+  ndcId?: string | null;
   form: string;
   inInventory?: boolean;
 }
